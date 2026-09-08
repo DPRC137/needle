@@ -11,7 +11,7 @@ from .agent.tools import Field, build_schema, pydantic_schema, tool, _is_pydanti
 from ._telemetry import track as _track
 from ._worker import FineTuneWorker
 
-__version__ = "2.0.12"
+__version__ = "2.0.13"
 __all__ = ["Needle", "ExtractionValidationError", "tool", "Field", "extract",
            "__version__"]
 
