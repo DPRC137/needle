@@ -2,7 +2,7 @@
 
 > Needle 3 is a 29-121M parameter on-device model for tool calling, device control, and structured extraction. This Python package (`cactus-needle`) is inference + LoRA fine-tuning + export. Text goes in, a JSON tool call comes back; a byte-level grammar compiled from your schemas constrains every token, so the call is always well-formed. A sub-1 MB engine and the 35 MB `needle3.cact` weights are fetched once from Hugging Face and cached; nothing is compiled locally.
 
-This file is written for AI coding assistants. It is enough to write correct Needle code without reading the source. Copy the patterns; do not invent API that is not listed here. The human guides are at https://cactuscompute.com/blog/needle-python-docs, https://cactuscompute.com/blog/designing-tools-for-needle, https://cactuscompute.com/blog/needle-confidence, https://cactuscompute.com/blog/structured-extraction-with-needle, https://cactuscompute.com/blog/finetuning-needle and https://cactuscompute.com/blog/needle-supported-devices.
+This file is written for AI coding assistants. It is enough to write correct Needle code without reading the source. Copy the patterns; do not invent API that is not listed here. The human guides are at https://cactuscompute.com/blog/needle-python-docs, https://cactuscompute.com/blog/designing-tools-for-needle, https://cactuscompute.com/blog/needle-confidence, https://cactuscompute.com/blog/structured-extraction-with-needle, https://cactuscompute.com/blog/finetuning-needle, https://cactuscompute.com/blog/needle-supported-devices, https://cactuscompute.com/blog/cact-format and https://cactuscompute.com/blog/porting-needle.
 
 ## Install
 
