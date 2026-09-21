@@ -277,3 +277,17 @@ def test_tool_index_path_agrees_between_the_base_and_tuned_paths(engine, tuned, 
                if isinstance(call, tuple) and call[0] == "worker_start"]
     assert started
     assert base._tool_index_path.decode("utf-8") == os.fspath(index)
+
+
+def test_platform_tuned_archive_keeps_confidence(engine, tmp_path, fake_cact):
+    import needle
+
+    fake_cact(tmp_path / "platform.cact", [1, 2])
+    fake_cact(tmp_path / "local.cact", [1])
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        calibrated = needle.Needle(tools="[]", weights=str(tmp_path / "platform.cact"))
+    assert calibrated.complete("hello").get("confidence") is not None
+    with pytest.warns(UserWarning, match="confidence as None"):
+        uncalibrated = needle.Needle(tools="[]", weights=str(tmp_path / "local.cact"))
+    assert uncalibrated.complete("hello").get("confidence", "kept") is None

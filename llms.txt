@@ -128,7 +128,7 @@ if r["type"] == "call":
 
 ## Confidence gating
 
-`confidence` is the min of a post-hoc calibration head and the decode probability of the call. Calibration holds for the base model only: an agent constructed with `weights=` reports `confidence` as None (fine-tuning does not update the head). Pick a threshold per product; act at/above it, escalate below it:
+`confidence` is the min of a post-hoc calibration head and the decode probability of the call. The head ships inside the archive when it was trained for those weights: the base model and platform fine-tunes have it, so they report a calibrated score; local `needle finetune` does not train it, `needle build --lora` leaves it out, and an agent constructed with such weights reports `confidence` as None. Pick a threshold per product; act at/above it, escalate below it:
 
 ```python
 r = agent.complete(user_text)
@@ -187,6 +187,31 @@ agent.run("...")
 
 Options: `finetune --lora-rank 16 --lora-alpha 32 --lr 1e-4 --batch-size 16 --max-len 1024 --val-split 0.1 --checkpoint <base.safetensors or .pkl> --checkpoint-dir <dir> --out <adapter.safetensors or .pkl> --generate <n> --model <id> --workers <n>`; `--model` defaults to `deepseek/deepseek-flash-latest`, `--workers` defaults to `8`, and `--checkpoint-dir` defaults to `checkpoints`. `--generate` synthesizes extra examples through the configured OpenRouter endpoint before training. `build --bits 2|4 --upload` (with `NEEDLE_HF_REPO=<you>/<model>`).
 
+## Platform (hosted fine-tuning)
+
+The hosted platform at https://cactuscompute.com/v1 trains every size from 2 layers up on GPUs, scores each on your test file, and serves the `.cact` files; the API reference is https://cactuscompute.com/llms/api. The package drives it with a key from https://cactuscompute.com/dashboard/api-keys in `NEEDLE_API_KEY` (never print it). Files are chat-format JSONL: `messages` (OpenAI chat turns, tool calls on the assistant turn as `tool_calls` with `arguments` as a JSON string) and OpenAI-form `tools`.
+
+```sh
+needle platform finetune train.jsonl validation.jsonl test.jsonl [--max-depth N] [--suffix name] [--out dir] [--depth N] [--no-wait]
+needle platform generate --tools tools.json --examples 1000 [--description "..."] [--message "..."] [--suffix name] [--out dir]
+needle platform jobs [ftjob-id [--wait] [--out dir] [--depth N]] | models [model-id] | files | billing
+needle download model-<id> [--depth N] [--out dir]
+```
+
+```python
+from needle.platform import Platform, PlatformError
+client = Platform()                                   # key from NEEDLE_API_KEY, or Platform(api_key=...)
+client.billing()                                      # plan, limits, usage; a fine-tune spends one job at submission
+job = client.finetune(["train.jsonl"], ["validation.jsonl"], ["test.jsonl"], max_depth=20, suffix="smart-home")
+job = client.wait(job, poll=10)                       # raises PlatformError(code) if the job fails
+job["evaluations"]                                    # [{depth, validation: {correct, total, excluded}, test: {...}}, ...]
+client.download(job["fine_tuned_model"], "models")    # every size as <name>-<depth>L.cact; depth=8 for one
+gen = client.wait(client.generate(tools, 1000, description="...", messages=["..."], suffix="smart-home"))
+client.download_file(gen["files"][0]["id"], "train.jsonl")
+```
+
+Submission prints the job's dashboard page, https://cactuscompute.com/dashboard/jobs/<id>; Ctrl-C leaves the job running and `needle platform jobs <id> --wait --out dir` resumes the wait and the download. `PlatformError.code` is the API's stable code (`unauthorized`, `subscription_required`, `quota_exceeded`, `job_active`, `rate_limited`, `invalid_request`, ...), with `.param` and `.url` when the API sends them; `rate_limited` is retried after `Retry-After` automatically. Ask before every `finetune` or `generate`: both spend allowance at submission. Platform files also train locally: `needle finetune train.jsonl` reads single-turn chat-format lines as well as the `query`/`answers` form.
+
 ## Playground (browser)
 
 Hosted at https://cactuscompute.com/needle: preset demos, editable tools/prompt, multi-turn follow-ups, and a "Finetune on these tools" button that runs the pipeline above and returns a downloadable `.cact`. `needle playground [--weights my.cact]` serves the same UI locally at http://127.0.0.1:7860. Local fine-tuning is 4-bit; the 2-bit post-training and quantisation behind the shipped model, enriched with Cactus proprietary datasets, run on the Cactus Platform at https://cactuscompute.com/dashboard.
@@ -208,7 +233,8 @@ Adapt by swapping the Literal values for your own and keeping the shapes: closed
 - `needle generate-data` / `needle finetune` / `needle build [checkpoint] [--lora adapter] [--layers N] [--platform <folder>] [--out <path>]` - the fine-tuning pipeline; fine-tuning runs at the full 20 layers, `build` merges the adapter, slices the `--layers` rung (default 20), exports at 4 bits, and fetches the published `needle3.cact` on every run (without an adapter at full depth it ships that published 2-bit archive as is). `--platform` also downloads that platform's engine and header and makes `--out` a folder holding them plus `needle3.cact`.
 - `needle playground` - the browser UI locally (hosted at https://cactuscompute.com/needle).
 - `needle fetch [--platform-tag <tag>] [--out <dir>]` - pre-download the inference engine for this machine (or another platform) into the cache; prints the path. For air-gapped devices, also see `NEEDLE3_LIB_PATH` and `HF_HUB_OFFLINE` at https://cactuscompute.com/blog/needle-python-docs.
-- `needle download needle3 | needle3.safetensors | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/`. Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
+- `needle platform finetune | generate | jobs | models | files | billing` - the hosted platform from the CLI (section above).
+- `needle download needle3 | needle3.safetensors | model-<id> | <org>/<repo>[/<file>.cact] | <platform> [--out <dir>]` - pull the base Needle 3 archive, a checkpoint to fine-tune, a platform-trained model by id (`--depth N` for one size), a published `.cact` (single-archive repos need only `<org>/<repo>`), or pass a platform folder name (`macos-arm64`, `linux-x86_64`, `wasm`, `wasm-component`, ...) to fetch that platform's engine files into `<out>/<platform>/`. Native runners are marked executable; `wasm-component` contains the WASI Preview 2 component and WIT contract.
 
 ## Common mistakes to avoid
 

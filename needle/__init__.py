@@ -41,6 +41,40 @@ def _weight_generation(path):
             "cannot choose a compatible Needle engine") from exc
 
 
+_CACT_HEADER = "<48If"
+_CACT_RECORD = "<BBHIIIIQQII"
+_CACT_FP16, _CACT_RAW = 1, 4
+_CONFIDENCE_HEAD_CODE = 2
+
+
+def _confidence_head_present(path):
+    """Whether a Needle 3 archive carries a confidence head, read from its head manifest."""
+    import struct
+
+    with open(path, "rb") as handle:
+        header = handle.read(struct.calcsize(_CACT_HEADER))
+        if len(header) < struct.calcsize(_CACT_HEADER):
+            return False
+        fields = struct.unpack(_CACT_HEADER, header)
+        num_tensors, codebook = fields[1], fields[2]
+        handle.seek(codebook * 4, 1)
+        size = struct.calcsize(_CACT_RECORD)
+        records = [struct.unpack(_CACT_RECORD, handle.read(size)) for _ in range(num_tensors)]
+        if not records or records[-1][0] != _CACT_RAW:
+            return False
+        for heads in (1, 2, 3):
+            index = num_tensors - 2 - 6 * heads
+            if index < 0:
+                continue
+            dtype, ndim, _, length = records[index][:4]
+            if dtype != _CACT_FP16 or ndim != 1 or length != heads:
+                continue
+            handle.seek(records[index][7])
+            codes = struct.unpack(f"<{heads}e", handle.read(2 * heads))
+            return _CONFIDENCE_HEAD_CODE in {int(round(c)) for c in codes}
+    return False
+
+
 def _library_path(generation=2):
     from .agent import fetch
 
@@ -132,9 +166,11 @@ class Needle:
             self._generation = int(generation or 3)
         self._worker = None
         self._closed = False
-        if self._tuned:
-            warnings.warn("finetuning does not update the confidence head, so scores are "
-                          "uncalibrated for tuned weights; this agent reports confidence as None",
+        self._calibrated = (not self._tuned
+                            or (self._generation >= 3 and _confidence_head_present(self._weights)))
+        if not self._calibrated:
+            warnings.warn("these weights carry no confidence head trained for them, so this "
+                          "agent reports confidence as None; platform fine-tunes keep the head",
                           stacklevel=2)
         self._system_text = _with_date_fact(system or "") if auto_date else (system or "")
         self._system = self._system_text.encode("utf-8")
@@ -220,7 +256,7 @@ class Needle:
             raise RuntimeError(
                 f"engine returned an unparseable envelope ({err}); this is an "
                 f"engine bug - please report it with the prompt and schema") from err
-        if self._tuned:
+        if not self._calibrated:
             response["confidence"] = None
         if ground:
             _annotate_ungrounded(response, self._tool_schemas, self._seen_years,

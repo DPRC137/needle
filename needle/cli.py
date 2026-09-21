@@ -10,7 +10,8 @@ HELP = """usage: needle <command> [options]
   finetune       train a LoRA adapter on JSONL data (--layers N for a rung)
   generate-data  synthesise training data via OpenRouter
   build          export a checkpoint (+ adapter) to a .cact archive
-  download       needle3 | needle3.safetensors | <platform> | <org>/<repo>[/<file>.cact]
+  platform       fine-tune, generate data and download models on cactuscompute.com
+  download       needle3 | needle3.safetensors | <platform> | model-<id> | <org>/<repo>[/<file>.cact]
   fetch          fetch the engine library for this platform
   playground     serve the browser playground
 
@@ -31,6 +32,8 @@ def _download_target(spec):
 
     if "/" in spec:
         return "hub", spec
+    if spec.startswith("model-"):
+        return "hosted", spec
     if spec in fetch.PLATFORMS:
         return "platform", spec
     name = spec[:-5] if spec.endswith(".cact") else spec
@@ -41,7 +44,8 @@ def _download_target(spec):
     raise SystemExit(
         f"unknown download {spec!r}: pass needle3 (base weights), needle3.safetensors "
         f"(the checkpoint to fine-tune), a platform ("
-        + ", ".join(fetch.PLATFORMS) + "), or <org>/<repo>[/<file>.cact]")
+        + ", ".join(fetch.PLATFORMS) + "), model-<id> from cactuscompute.com, "
+        "or <org>/<repo>[/<file>.cact]")
 
 
 _ABSL_LOG_START = re.compile(rb"^[EIWF]\d{4} \d\d:\d\d:\d\d")
@@ -200,11 +204,49 @@ def main():
     p.add_argument("spec", type=str,
                    help="needle3 (base weights), needle3.safetensors (the checkpoint to "
                         "fine-tune), a platform "
-                        "folder (e.g. macos-arm64), or a Hugging Face spec: "
+                        "folder (e.g. macos-arm64), a fine-tuned model-<id> from "
+                        "cactuscompute.com, or a Hugging Face spec: "
                         "<org>/<repo>/<file>.cact, or <org>/<repo> if it holds one archive")
     p.add_argument("--out", type=str, default=".", help="Directory to place the files")
+    p.add_argument("--depth", type=int, default=None,
+                   help="One size of a fine-tuned model-<id> (default: every size)")
     p.add_argument("--generation", type=int, choices=[2, 3], default=3,
                    help="Engine generation when downloading a platform build (default: 3)")
+
+    p = sub.add_parser("platform")
+    verbs = p.add_subparsers(dest="verb")
+    v = verbs.add_parser("finetune")
+    v.add_argument("train", type=str, help="Training .jsonl (a path, or a file-<id> already uploaded)")
+    v.add_argument("validation", type=str, help="Validation .jsonl or file-<id>")
+    v.add_argument("test", type=str, help="Test .jsonl or file-<id>")
+    v.add_argument("--max-depth", type=int, default=None,
+                   help="Largest size to train, 2 up to the base depth (default: the base depth)")
+    v.add_argument("--suffix", type=str, default=None, help="Name for the job and its models")
+    v.add_argument("--out", type=str, default=".", help="Directory for the downloaded .cact files")
+    v.add_argument("--depth", type=int, default=None,
+                   help="Download one size only (default: every size)")
+    v.add_argument("--no-wait", action="store_true",
+                   help="Submit and print the job id without polling or downloading")
+    v = verbs.add_parser("generate")
+    v.add_argument("--tools", type=str, required=True, help="Tool definitions .json, flat or OpenAI form")
+    v.add_argument("--examples", type=int, default=1000, help="Examples to generate, 100 to 10,000")
+    v.add_argument("--description", type=str, default=None, help="What the product does")
+    v.add_argument("--message", action="append", default=None,
+                   help="An example user message; repeat for several")
+    v.add_argument("--suffix", type=str, default=None, help="Name for the job and its files")
+    v.add_argument("--out", type=str, default=".", help="Directory for the generated .jsonl files")
+    v.add_argument("--no-wait", action="store_true",
+                   help="Submit and print the job id without polling or downloading")
+    v = verbs.add_parser("jobs")
+    v.add_argument("job_id", type=str, nargs="?", default=None, help="One job to show in full")
+    v.add_argument("--wait", action="store_true", help="Poll that job until it ends")
+    v.add_argument("--out", type=str, default=None,
+                   help="Download what the finished job produced into this directory")
+    v.add_argument("--depth", type=int, default=None, help="One size of a fine-tuned model (default: every size)")
+    v = verbs.add_parser("models")
+    v.add_argument("model_id", type=str, nargs="?", default=None, help="One model to show with its sizes")
+    v = verbs.add_parser("files")
+    verbs.add_parser("billing")
 
     p = sub.add_parser("fetch")
     p.add_argument("--out", type=str, default=None,
@@ -264,6 +306,11 @@ def main():
             path = fetch.fetch_weights(target, args.out)
             print(f"  {'weights':<9} {path}  {os.path.getsize(path) / 1e6:.2f} MB")
             print(f"  {'next':<9} needle.Needle(weights={path!r}, tools=[...])")
+        elif kind == "hosted":
+            from .platform import Platform
+            for path in Platform().download(target, args.out, depth=args.depth):
+                print(f"  {'weights':<9} {path}  {os.path.getsize(path) / 1e6:.2f} MB")
+            print(f"  {'next':<9} needle.Needle(weights=<path>, tools=[...], auto_date=False)")
         elif kind == "checkpoint":
             generation = 2 if target.startswith("needle2") else 3
             path = fetch.fetch_checkpoint(target, os.path.join(args.out, fetch.CHECKPOINT_PREFIX),
@@ -297,6 +344,9 @@ def main():
         print(f"  {'engine':<9} {path}")
         print(f"  {'deploy':<9} copy to ~/.cache/cactus-needle/v{generation}/{version}/ "
               f"on the device, or point NEEDLE{generation}_LIB_PATH at the file")
+    elif args.command == "platform":
+        from .platform import main as platform_main
+        platform_main(args)
     elif args.command == "playground":
         from .playground.server import main as playground_main
         playground_main(args)

@@ -62,13 +62,44 @@ Needle was designed to be customised. Its capacity is a ladder, and a subnetwork
 
 ![Every subnetwork before and after fine-tuning on DroidCall and on Mobile Actions](assets/finetune.svg)
 
+Two ways to fine-tune, from the same package:
+
+| | Local, `needle finetune` | Platform, `needle platform finetune` |
+| --- | --- | --- |
+| What trains | LoRA adapters on the attention projections, base frozen, merged at export | The full model, every depth from 2 layers up |
+| What it keeps | Your data only | Your data reinforced with Needle's original dataset, so nothing already learned is unlearned |
+| Confidence | Head untouched; `confidence` is `None` | Head fine-tuned with the model, calibrated on your tools |
+| Precision | 4-bit | 2-bit, the same post-training as the shipped model |
+| Data | Your JSONL, `query`/`answers` or chat format | Yours, or generated from your tool definitions, 100 to 10,000 examples per run |
+| Scores | Validation loss | Validation and test accuracy for every depth |
+| Compute | Your machine, JAX on CPU, CUDA or Metal | Cactus GPUs |
+| Runs from | The CLI | The CLI, Python, the [dashboard](https://cactuscompute.com/dashboard), or a coding agent holding your key |
+
+Local:
+
 ```sh
 pip install "cactus-needle[train]"
 needle finetune data.jsonl --epochs 10 --out adapter.safetensors
 needle build --lora adapter.safetensors --layers 8 --out tuned.cact
 ```
 
-Local fine-tuning trains and exports at 4 bits; the [fine-tuning guide](https://cactuscompute.com/blog/finetuning-needle) has the rest. The 2-bit post-training and quantisation behind the shipped model, enriched with Cactus proprietary datasets, run on the [Cactus Platform](https://cactuscompute.com/dashboard).
+Platform, with a key from the [console](https://cactuscompute.com/dashboard/api-keys) in `NEEDLE_API_KEY`. One command uploads the files, trains and scores every size, and downloads the `.cact` files; once a job is submitted it can also be followed on the dashboard:
+
+```sh
+export NEEDLE_API_KEY=needle_ft_...
+needle platform generate --tools tools.json --examples 1000 --out ./data
+needle platform finetune data/train.jsonl data/validation.jsonl data/test.jsonl --suffix smart-home --out ./models
+```
+
+```python
+from needle.platform import Platform
+
+client = Platform()
+job = client.wait(client.finetune(["train.jsonl"], ["validation.jsonl"], ["test.jsonl"], suffix="smart-home"))
+paths = client.download(job["fine_tuned_model"], "models", depth=8)
+```
+
+Or hand the key to Claude Code or Codex with [cactuscompute.com/llms.txt](https://cactuscompute.com/llms.txt) and let the agent run the loop. `needle platform jobs | models | files | billing` list what the account holds, `needle download model-<id>` fetches a model by id, and the [fine-tuning guide](https://cactuscompute.com/blog/finetuning-needle) covers the data format and how to read the scores.
 
 ## Deploy
 

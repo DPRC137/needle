@@ -98,3 +98,37 @@ def published_base(tiny_base_archive, monkeypatch):
 
     monkeypatch.setattr(fetch, "fetch_weights", fake_fetch)
     return calls
+
+
+@pytest.fixture
+def fake_cact():
+    return _fake_cact
+
+
+def _fake_cact(path, heads):
+    import struct
+
+    header_fmt, record_fmt = "<48If", "<BBHIIIIQQII"
+    body = bytearray()
+    records = []
+
+    def add(dtype, shape, blob):
+        records.append((dtype, len(shape), 0, *(list(shape) + [0] * (4 - len(shape))), len(body), len(blob), 0, 0))
+        body.extend(blob)
+
+    add(1, (4,), struct.pack("<4e", 0, 0, 0, 0))
+    if heads:
+        add(1, (len(heads),), struct.pack(f"<{len(heads)}e", *heads))
+        for _ in heads:
+            for _ in range(6):
+                add(1, (2,), struct.pack("<2e", 0, 0))
+    add(4, (3,), b"tok")
+    head = struct.calcsize(header_fmt) + struct.calcsize(record_fmt) * len(records)
+    fields = [0x05E12A84, len(records), 0] + [0] * 45
+    out = bytearray(struct.pack(header_fmt, *fields, 0.0))
+    for rec in records:
+        rec = list(rec)
+        rec[7] += head
+        out += struct.pack(record_fmt, *rec)
+    out += body
+    path.write_bytes(bytes(out))

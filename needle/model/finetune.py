@@ -224,8 +224,35 @@ def _encode(tokenizer, example, max_len):
     return ids + [PAD_ID] * pad, mask + [0.0] * pad
 
 
-def fit_max_len(path, tokenizer, cap):
-    longest = 0
+def from_chat(example):
+    """A platform chat-format line (`messages` + OpenAI-form `tools`) as a local example.
+
+    Handles one user turn answered by one assistant turn, with an optional system
+    turn in front; returns None for anything else.
+    """
+    messages = example.get("messages")
+    if not isinstance(messages, list) or "query" in example:
+        return None
+    turns = [m for m in messages if m.get("role") != "system"]
+    if len(turns) != 2 or turns[0].get("role") != "user" or turns[1].get("role") != "assistant":
+        return None
+    answers = []
+    for call in turns[1].get("tool_calls") or []:
+        function = call.get("function") or call
+        arguments = function.get("arguments", {})
+        if isinstance(arguments, str):
+            arguments = json.loads(arguments) if arguments.strip() else {}
+        answers.append({"name": function.get("name"), "arguments": arguments})
+    tools = [t.get("function", t) if isinstance(t, dict) else t for t in example.get("tools") or []]
+    out = {"query": turns[0].get("content") or "", "tools": tools, "answers": answers}
+    system = [m.get("content") for m in messages if m.get("role") == "system"]
+    if system and system[0]:
+        out["system"] = system[0]
+    return out
+
+
+def read_examples(path, report=False):
+    skipped = 0
     with open(path) as handle:
         for line in handle:
             line = line.strip()
@@ -233,9 +260,20 @@ def fit_max_len(path, tokenizer, cap):
                 continue
             example = json.loads(line)
             if "query" not in example:
+                example = from_chat(example)
+            if example is None:
+                skipped += 1
                 continue
-            prompt, target = render_example(example)
-            longest = max(longest, len(tokenizer.encode(prompt)) + len(tokenizer.encode(target)) + 2)
+            yield example
+    if skipped and report:
+        print(f"  skipped {skipped} line(s) that are neither query/answers nor single-turn chat format")
+
+
+def fit_max_len(path, tokenizer, cap):
+    longest = 0
+    for example in read_examples(path):
+        prompt, target = render_example(example)
+        longest = max(longest, len(tokenizer.encode(prompt)) + len(tokenizer.encode(target)) + 2)
     bucket = 128
     while bucket < min(longest, cap):
         bucket *= 2
@@ -244,17 +282,10 @@ def fit_max_len(path, tokenizer, cap):
 
 def load_jsonl(path, tokenizer, max_len):
     seqs, masks = [], []
-    with open(path) as handle:
-        for line in handle:
-            line = line.strip()
-            if not line:
-                continue
-            example = json.loads(line)
-            if "query" not in example:
-                continue
-            ids, mask = _encode(tokenizer, example, max_len)
-            seqs.append(ids)
-            masks.append(mask)
+    for example in read_examples(path, report=True):
+        ids, mask = _encode(tokenizer, example, max_len)
+        seqs.append(ids)
+        masks.append(mask)
     return np.array(seqs, np.int32), np.array(masks, np.float32)
 
 
@@ -427,7 +458,7 @@ def finetune_local(args, progress=None):
     })
     print(f"  {'adapter':<9} {out}")
     print(f"  {'next':<9} needle build {base_path} --lora {out}")
-    print(f"  {'note':<9} confidence reports None with tuned weights; the head is not tuned")
+    print(f"  {'note':<9} local tuning leaves the confidence head untrained; needle build drops it and confidence reports None")
 
 
 def build_main(args):
@@ -435,7 +466,7 @@ def build_main(args):
     import jax.numpy as jnp
     from ..agent import fetch
     from .run import load_checkpoint
-    from .architecture import effective_kv_window
+    from .architecture import ConfidenceHead, effective_kv_window
     from .export import read_layers, read_tokenizer_blob, write_export
     from .quantize import WEIGHT_BITS
 
@@ -468,6 +499,9 @@ def build_main(args):
                     for key, v in adapter["lora"].items()}
             params = merge_lora(params, lora, adapter["scale"])
             print(f"  {'merged':<9} {len(lora)} weight groups  {args.lora}")
+            if ConfidenceHead.key in params:
+                params = {k: v for k, v in params.items() if k != ConfidenceHead.key}
+                print(f"  {'dropped':<9} the confidence head; it is not trained locally, so confidence reports None")
         params, config = rung(params, config, layers)
         print(f"  {'depth':<9} {config.num_layers} layers")
         out = out or (os.path.splitext(os.path.basename(checkpoint))[0] + ".cact")
